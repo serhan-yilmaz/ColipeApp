@@ -2,9 +2,11 @@
 library(Matrix)
 library(shiny)
 library(shinyWidgets)
+library(Ecume)
 library(tidyverse)
 source("ui_util.R")
 source("util_matlab2R_helper_functions.R")
+source("multSolver.R")
 
 # For javascript
 library(shinyjs)
@@ -52,6 +54,40 @@ options(shiny.maxRequestSize=30*1024^2)
 # nEdge = nRichRich + nRichPoor + nPoorPoor
 # influence = (nPoorPoor + nRichPoor/2) / nEdge
 
+edge_cats = c("Rich-Rich", "Rich-Moderate", "Moderate-Rich", "Rich-Poor", "Poor-Rich", 
+              "Moderate-Moderate", "Moderate-Poor", "Poor-Moderate", "Poor-Poor")
+edge_cat_isrichedge = c(T, T, T, T, T, F, F, F, F)
+edge_cat_selected = edge_cats[edge_cat_isrichedge]
+
+dropdown_options <- function(content, titletxt = "Options", tooltip = "Click to see options."){
+  tags$div(style = "max-width: 70px; float: right; vertical-align: top; right: 0%; top:0px;", 
+  dropdownButton(
+    size = "sm", 
+    icon = icon("cog"), #status = "info", 
+    right = T, 
+    up = T, 
+    tooltip = tooltipOptions(title = tooltip, placement = "top"), 
+    tags$h4(style = "font-weight:bold; margin-bottom: 10px; white-space: nowrap;", titletxt), 
+    content, 
+    tags$p(style = "margin-bottom: 10px;", "")
+  ))
+}
+
+dropdown_options_alt <- function(content, titletxt = "Options", tooltip = "Click to see options.", width = NULL){
+  tags$div(style = "max-width: 70px; float: right; vertical-align: top; right: 0%; top:0px; z-index:100", 
+           dropdown(
+             size = "md", 
+             icon = icon("cog"), #status = "info", 
+             right = T, 
+             up = T, 
+             width = width, 
+             tooltip = tooltipOptions(title = tooltip, placement = "top"), 
+             tags$h4(style = "font-weight:bold; margin-bottom: 10px; white-space: nowrap;", titletxt), 
+             content, 
+             tags$p(style = "margin-bottom: 10px;", "")
+           ))
+}
+
 ui <- fluidPage(
     useToastr(),
     useShinyjs(),
@@ -68,7 +104,11 @@ ui <- fluidPage(
     # Sidebar with a slider input for number of bins 
     sidebarLayout(
         sidebarPanel(
-            helper(multiChoicePicker("samplenetwork", "Select Network:", c("Biogrid PPI", "Biogrid PPI (Across Time)", "STRING PPI", "Drugbank DDI", "PSP KS", "TRRUST TF", "CTD DDA", "NDFRT DDA"), selected = "Biogrid PPI"),
+            helper(
+              tags$div(
+              multiChoicePicker("samplenetwork", "Select Network:", c("Biogrid PPI", "Biogrid PPI (Across Time)", "STRING PPI", "Drugbank DDI", "PSP KS", "TRRUST TF", "CTD DDA", "NDFRT DDA"), selected = "Biogrid PPI"),
+              tags$b(style = "margin-right:2px;", ""), 
+              downloadButton("downloadSampleData", label = "Download")),
             , type = "markdown", id = "samplenetwork_tooltip_icon", content = "select_sample_network"),
             tags$hr(style = "margin:8px 0px 6px 0px;"),
             helper(tags$div(style = "margin: 0px;", id = "upload_data_div", 
@@ -157,10 +197,50 @@ ui <- fluidPage(
                  ))
                  ),
                  ), 
-            tabPanel("Separability Analysis", 
+            tabPanel("Bias Analysis", 
                      tags$div(style = "max-width: 600px; margin-left: auto; margin-right: auto;", 
-                              shinycssloaders::withSpinner(plotOutput("distPlot4"), hide.ui = FALSE)
-                     ))
+                              tags$div(
+                                fileInput("file2", "Upload Positives:", accept = c(".csv")),
+                                tags$style(".shiny-input-container {margin-bottom: 0px} #file2_progress { margin-bottom: 3px } .checkbox { margin-top: 0px}"),
+                                tags$style(".checkbox {margin-bottom: 0px;}"),
+                              ),
+                              tags$div(
+                                fileInput("file3", "Upload Negatives:", accept = c(".csv")),
+                                tags$style(".shiny-input-container {margin-bottom: 0px} #file3_progress { margin-bottom: 3px } .checkbox { margin-top: 0px}"),
+                                tags$style(".checkbox {margin-bottom: 0px;}"),
+                              ),
+                              shinycssloaders::withSpinner(plotOutput("distPlot4"), hide.ui = FALSE),
+                              tags$p(style ="text-align:justify; color:#595959; font-size: 14px;", tags$b("Separability plot:"), "Positives are the known interactions (edges) in the test set and Negatives are the set of possible node pairs without a known interaction. Y-axis shows the preferential attachment score, which serves as a representative score for the node degree information. The dashed line indicates the median level. Separability score (given in the top) is equal to the maximum horizontal distance between the positives and the negatives in this plot, indicating the predictive power of the node degree information.")
+                     )),
+            tabPanel("Download", #"Balanced Evaluation",
+                     tags$p(style = "margin-top:12px;", ""), 
+                     tags$h4(style = "font-size: 18px; margin-bottom:0px;", "Option 1: Weighted Analysis during Evaluation"), 
+                     tags$div(
+                       class = "panel-body",
+                       style = "padding-bottom:10px; padding-top:10px; margin:0px;",
+                       id = "exportTo",
+                       tags$strong("Download Weights:", style="margin-right:4px;"),
+                       #tags$div(
+                       # style = "display: inline; float:right;", 
+                       downloadButton("downloadWeights_csv", label = "CSV"),
+                       downloadButton("downloadWeightsTestOnly_csv", label = "CSV (Test set only)"),
+                     ),
+                     tags$h4(style = "font-size: 18px; margin-bottom:0px;", "Option 2: Stratified Analysis based on Node Categories"), 
+                     tags$div(
+                       class = "panel-body",
+                       style = "padding-bottom:10px; padding-top:10px; margin:0px;",
+                       id = "exportTo",
+                       tags$strong("Download Stratified Network:", style="margin-right:4px;"),
+                       #tags$div(
+                       # style = "display: inline; float:right;", 
+                       downloadButton("downloadStratified_csv", label = "CSV"),
+                       downloadButton("downloadStratifiedTestOnly_csv", label = "CSV (Test set only)"),
+                       dropdown_options_alt(
+                         multiChoicePicker("richedges_definition", "Rich Edges Include:", edge_cats, selected = edge_cat_selected, isInline = "F", multiple = T, max_opts = 9, width = "100px"), 
+                         title = "Stratified Analysis Options", tooltip = "Click to display options.", width = "350px"
+                       )
+                     )
+                    )
             )
         )
     )
@@ -173,6 +253,8 @@ server <- function(input, output) {
     
     upload_name <- reactiveVal("")
     myvalue <- reactiveVal("sample")
+    
+    myvalue_posneg <- reactiveVal("default")
   
     sampleNetworkValue <- reactive({
         message(input$samplenetwork)
@@ -202,12 +284,15 @@ server <- function(input, output) {
     parse_sample_data <- reactive({
         folder = "data/"
         Tsample <- read.csv(paste(folder, sampleNetworkValue(), ".csv", sep=""))
-        out = list(Tdata = Tsample, isBipartite = sampleNetworkIsBipartite(), isUpload = FALSE)
+        out = list(Tdata = Tsample, isBipartite = sampleNetworkIsBipartite(), isUpload = FALSE, network_name = sampleNetworkValue())
     })
     
     observeEvent(input$samplenetwork, {
       myvalue("sample")
+      myvalue_posneg("default")
       reset('file1')
+      reset('file2')
+      reset('file3')
       # cat(paste(as.character(Sys.time()), " - " ,  session_id(), ": ", upload_name(), "-", network_value(), "\n", sep = ""), file = "logs/combined_log.txt", append = T)
     })
     
@@ -215,9 +300,74 @@ server <- function(input, output) {
       inFile <- input$file1
       if (is.null(inFile))
         return(NULL)
+      reset('file2')
+      reset('file3')
       upload_dataset()
       req(upload_dataset())
       # cat(paste(as.character(Sys.time()), " - " ,  session_id(), ": ", upload_name(), "-", network_value(), "\n", sep = ""), file = "logs/combined_log.txt", append = T)
+    })
+    
+    observeEvent(input$file2, {
+      inFile <- input$file2
+      if (is.null(inFile))
+        return(NULL)
+      myvalue_posneg("upload_positives")
+      reset('file3')
+      upload_positives_negatives()
+      req(upload_positives_negatives())
+      # cat(paste(as.character(Sys.time()), " - " ,  session_id(), ": ", upload_name(), "-", network_value(), "\n", sep = ""), file = "logs/combined_log.txt", append = T)
+    })
+    
+    observeEvent(input$file3, {
+      inFile <- input$file3
+      if (is.null(inFile))
+        return(NULL)
+      myvalue_posneg("upload_negatives")
+      reset('file2')
+      upload_positives_negatives()
+      req(upload_positives_negatives())
+      # cat(paste(as.character(Sys.time()), " - " ,  session_id(), ": ", upload_name(), "-", network_value(), "\n", sep = ""), file = "logs/combined_log.txt", append = T)
+    })
+    
+    upload_positives_negatives <- reactive({
+      library(tools)
+      if(myvalue_posneg() == "upload_positives"){
+        inFile <- input$file2
+      } else {
+        inFile <- input$file3
+      }
+      if (is.null(inFile))
+        return(NULL)
+      fileInfo <- input$file2
+      ext = file_ext(inFile$datapath)
+      switch(ext, 
+             "csv" = x <- read.csv(inFile$datapath),
+             validate(
+               need(FALSE, "Invalid file type.")
+             )
+      )
+      message(cat("Positives dataset is uploaded: ", fileInfo$name))
+      
+      validate(
+        need(x$NodeIdentifier1, "File format error: NodeIdentifier1 column is missing."),
+        need(x$NodeIdentifier2, "File format error: NodeIdentifier2 column is missing."),
+        # need(x$InTestSet, "File format error: InTestSet column is missing.")
+      )
+      return(x)
+    })
+    
+    parse_upload_postneg_dataset <- reactive({
+      req(upload_positives_negatives())
+      Tdata = upload_positives_negatives()
+      nMatch = nnzero(!is.na(match(Tdata$NodeIdentifier1, Tdata$NodeIdentifier2)))
+      #isBipartite = input$isbipartite
+      isBipartite = FALSE
+      if(nMatch == 0 && isBipartite == FALSE){
+        delay(50, toastr_info("The uploaded dataset is detected to be bipartite and will be analyzed as such.", closeButton = F))
+        #isolate(input$isbipartite)
+        isBipartite = TRUE
+      }
+      out = list(Tdata = Tdata, isBipartite = isBipartite, isUpload = T)
     })
     
     upload_dataset <- reactive({
@@ -234,6 +384,7 @@ server <- function(input, output) {
              )
       )
       myvalue("upload")
+      myvalue_posneg("default")
       upload_name(fileInfo$name)
       message(cat("Dataset is uploaded: ", fileInfo$name))
       
@@ -283,6 +434,8 @@ server <- function(input, output) {
             Tsample$id2 = match(Tsample$NodeIdentifier2, ids)
             nRow = length(ids)
             nCol = length(ids)
+            rowIds = ids
+            colIds = ids
         }else{
             ids1 = unique(Tsample$NodeIdentifier1)
             ids2 = unique(Tsample$NodeIdentifier2)
@@ -290,6 +443,8 @@ server <- function(input, output) {
             Tsample$id2 = match(Tsample$NodeIdentifier2, ids2)
             nRow = length(ids1)
             nCol = length(ids2)
+            rowIds = ids1
+            colIds = ids2
         }
         
         Tsample$InTestSet = Tsample$InTestSet == "True"
@@ -315,7 +470,57 @@ server <- function(input, output) {
             Wtest = Wtest | t(Wtest);
         }
         
-        out = list(Wtrain = Wtrain, Wtest = Wtest, nRow = nRow, nCol = nCol, isBipartite = isBipartite)
+        W = Wtrain | Wtest
+        
+        out = list(Wtrain = Wtrain, Wtest = Wtest, W = W, nRow = nRow, nCol = nCol, 
+                   isBipartite = isBipartite, rowIds = rowIds, colIds = colIds)
+    })
+    
+    weighted_network <- reactive({
+      req(preprocess_data())
+      toastr_info("Computing the weights, this may take some time...", timeOut = 10000, extendedTimeOut = 10000)
+      W = preprocess_data()$Wtrain | preprocess_data()$Wtest
+      progress <- shiny::Progress$new()
+      on.exit(progress$close())
+      progress$set(message = "Computing weights", value = 0)
+      Wprob <- multSolver(W, rep(1, nrow(W)), rep(1, ncol(W)), cutoff = 1e-2, maxiter = 50, 
+                          computeProgress = TRUE, progressObj = progress)
+      return(Wprob)
+    })
+    
+    weighted_network_table <- reactive({
+      req(weighted_network())
+      Wtrain <- preprocess_data()$Wtrain
+      Wtest <- preprocess_data()$Wtest
+      W <- Wtrain | Wtest
+      edges = which(W)
+      out = ind2sub(nrow(W), ncol(W), edges)
+      
+      isInTestSet = Wtest[edges]
+      
+      rowIds <- preprocess_data()$rowIds
+      colIds <- preprocess_data()$colIds
+      Wprob <- weighted_network()
+      
+      edge_weights = Wprob[edges]
+      
+      Tweighted = data.frame(
+        NodeIdentifier1 = rowIds[out$r],
+        NodeIdentifier2 = colIds[out$c],
+        EdgeWeight = round_m(edge_weights, digits = c(), sigdigits = 4)
+        #EdgeWeight = edge_weights
+      )
+      return(Tweighted)
+    })
+    
+    weighted_network_table_testset <- reactive({
+      Tweighted <- weighted_network_table()
+      W <- preprocess_data()$W
+      Wtest <- preprocess_data()$Wtest
+      edges = which(W)
+      isInTestSet = Wtest[edges]
+      Tweighted = Tweighted[isInTestSet, ]
+      return(Tweighted)
     })
     
     findRichNodes <- function(D, target, invert = F){
@@ -357,44 +562,48 @@ server <- function(input, output) {
         out = list(Drow = Drow, Dcol = Dcol)
     })
     
+    fo_imbalance_analysis <- function(W, dg, target, isBipartite){
+      if(isBipartite){
+        richCols = findRichNodes(dg$Dcol, target)
+        richRows = findRichNodes(dg$Drow, target)
+      } else{
+        richCols = findRichNodes(dg$Dcol, target)
+        richRows = richCols
+      }
+      
+      nRichRich = nnzero(W[richRows, richCols])
+      nRichPoor = nnzero(W[richRows, !richCols])
+      nPoorRich = nnzero(W[!richRows, richCols])
+      nPoorPoor = nnzero(W[!richRows, !richCols])
+      nnRichPoor = nRichPoor + nPoorRich
+      
+      # nRichRich = nnzero(W[richNodes, richNodes])/2
+      # nRichPoor = nnzero(W[richNodes, !richNodes])
+      # nPoorPoor = nnzero(W[!richNodes, !richNodes])/2
+      nEdge = nRichRich + nRichPoor + nPoorPoor + nPoorRich
+      influence = (nPoorPoor + nnRichPoor/2) / nEdge
+      x = list()
+      x$percRichRich = nRichRich/nEdge
+      x$percRichPoor = (nRichRich+nnRichPoor)/nEdge
+      x$influence = influence
+      x$targetPerc = target
+      x$richCols = richCols
+      x$richRows = richRows
+      x$richTargetPerc = input$targetRichPerc/100
+      return(x)
+    }
+    
     imbalance_results <- reactive({
         req(preprocess_data())
         Wtrain <- preprocess_data()$Wtrain
         Wtest <- preprocess_data()$Wtest
         isBipartite <- preprocess_data()$isBipartite
         
+        W = Wtest | Wtrain
         dg <- compute_degrees()
         target = 1 - input$targetRichPerc/100
         
-        if(isBipartite){
-            richCols = findRichNodes(dg$Dcol, target)
-            richRows = findRichNodes(dg$Drow, target)
-        } else{
-            richCols = findRichNodes(dg$Dcol, target)
-            richRows = richCols
-        }
-        
-        W = Wtest | Wtrain
-        nRichRich = nnzero(W[richRows, richCols])
-        nRichPoor = nnzero(W[richRows, !richCols])
-        nPoorRich = nnzero(W[!richRows, richCols])
-        nPoorPoor = nnzero(W[!richRows, !richCols])
-        nnRichPoor = nRichPoor + nPoorRich
-        
-        # nRichRich = nnzero(W[richNodes, richNodes])/2
-        # nRichPoor = nnzero(W[richNodes, !richNodes])
-        # nPoorPoor = nnzero(W[!richNodes, !richNodes])/2
-        nEdge = nRichRich + nRichPoor + nPoorPoor + nPoorRich
-        influence = (nPoorPoor + nnRichPoor/2) / nEdge
-        x = list()
-        x$percRichRich = nRichRich/nEdge
-        x$percRichPoor = (nRichRich+nnRichPoor)/nEdge
-        x$influence = influence
-        x$targetPerc = target
-        x$richCols = richCols
-        x$richRows = richRows
-        x$richTargetPerc = input$targetRichPerc/100
-        return(x)
+        return(fo_imbalance_analysis(W, dg, target, isBipartite))
     })
     
     prepareNodeCategoryHistogramData <- function(D, node_cats_r){
@@ -483,12 +692,103 @@ server <- function(input, output) {
           P = V / nTotal
         }
         
+        rowCategories = poorRows * 1 + moderateRows * 2 + richRows * 3
+        colCategories = poorCols * 1 + moderateCols * 2 + richCols * 3
+
         x = list()
         x$V = V
         x$P = P
         x$row_data = prepareNodeCategoryHistogramData(dg$Drow, node_cats_r)
         x$column_data = prepareNodeCategoryHistogramData(dg$Dcol, node_cats_c)
+        x$rowCategories = rowCategories
+        x$colCategories = colCategories
         return(x)
+    })
+    
+    node_categories <- reactive({
+      req(imbalance_results_part2())
+      rowCategories = imbalance_results_part2()$rowCategories
+      colCategories = imbalance_results_part2()$colCategories
+      W = preprocess_data()$W
+      
+      row_cats = c("Poor", "Moderate", "Rich")
+      # for (iRow in 1:3){
+      #   row_cats[iRow] = sprintf("%s %s", row_cats[iRow], "Node")
+      # }
+      rowCategories_str = row_cats[rowCategories]
+      
+      col_cats = c("Poor", "Moderate", "Rich")
+      # for (iCol in 1:3){
+      #   col_cats[iCol] = sprintf("%s %s", col_cats[iCol], "Node")
+      # }
+      colCategories_str = col_cats[colCategories]
+      
+      x = list()
+      x$rowCategories_str = rowCategories_str
+      x$colCategories_str = colCategories_str
+      return(x)
+    })
+    
+    edge_categories <- reactive({
+      req(imbalance_results_part2())
+      rowCategories = imbalance_results_part2()$rowCategories
+      colCategories = imbalance_results_part2()$colCategories
+      W = preprocess_data()$W
+      
+      #edge_cats = c("Rich-Rich", "Rich-Moderate", "Moderate-Rich", "Rich-Poor", "Poor-Rich", 
+      #              "Moderate-Moderate", "Moderate-Poor", "Poor-Moderate", "Poor-Poor")
+      edge_cat_values = c(9, 8, 6, 7, 3, 5, 4, 2, 1)
+      #edge_cat_isrichedge = c(T, T, T, T, T, F, F, F, F)
+      edge_cat_isrichedge = !is.na(match(edge_cats, input$richedges_definition))
+      edge_cat_reverse_lookup = rep(0, 9)
+      edge_cat_reverse_lookup[edge_cat_values] = 1:9
+      edge_cat_reverse_name = edge_cats[edge_cat_reverse_lookup]
+      edge_cat_reverse_isrichedge = edge_cat_isrichedge[edge_cat_reverse_lookup]
+      edge_cat_name = c("Poor Edge", "Rich Edge")
+      #edge_cat_reverse_name_edgecat = edge_cat_name[edge_cat_reverse_isrichedge+1]
+      message("edge categories recomputed")
+      
+      edges = which(W)
+      subs = ind2sub(nrow(W), ncol(W), edges)
+      edgeCatAll = (rowCategories[subs$r] - 1) * 3 + colCategories[subs$c]
+      edgeCategories = edge_cat_reverse_isrichedge[edgeCatAll]
+      edgeCategories_str = edge_cat_name[edgeCategories+1]
+      
+      x = list()
+      x$edgeCategories = edgeCategories
+      x$edgeCategories_str = edgeCategories_str
+      x$edges = edges
+      x$subs = subs
+      return(x)
+    })
+    
+    stratified_network_table <- reactive({
+      #req(edge_categories())
+      #req(node_categories())
+      ecat <- edge_categories()
+      ncat <- node_categories()
+      
+      #isInTestSet = Wtest[edges]
+      
+      rowIds <- preprocess_data()$rowIds
+      colIds <- preprocess_data()$colIds
+      
+      Tstratified = data.frame(
+        NodeIdentifier1 = rowIds[ecat$subs$r],
+        NodeIdentifier2 = colIds[ecat$subs$c],
+        EdgeCategory = ecat$edgeCategories_str,
+        NodeCategory1 = ncat$rowCategories_str[ecat$subs$r],
+        NodeCategory2 = ncat$colCategories_str[ecat$subs$c]
+      )
+      return(Tstratified)
+    })
+    
+    stratified_network_table_testset <- reactive({
+      Tstratified <- stratified_network_table()
+      Wtest <- preprocess_data()$Wtest
+      isInTestSet = Wtest[edge_categories()$edges]
+      
+      Tstratified = Tstratified[isInTestSet, ]
     })
     
     separability_analysis <- reactive({
@@ -510,34 +810,94 @@ server <- function(input, output) {
         degreeRow = rowSums(Wtrain)
         degreeCol = colSums(Wtrain)
         
+        weights_positive =  rep(1, length(positives))
+        weights_negative =  rep(1, length(negatives))
+        
+        positives_legend = "Positives"
+        negatives_legend = "Negatives"
+        
+        if((myvalue_posneg() == "upload_positives") 
+           || (myvalue_posneg() == "upload_negatives")) {
+          Tdata = upload_positives_negatives()
+          i1 = match(Tdata$NodeIdentifier1, preprocess_data()$rowIds)
+          i2 = match(Tdata$NodeIdentifier2, preprocess_data()$colIds)
+          valids = !is.na(i1) & !is.na(i2)
+          i1 = i1[valids]
+          i2 = i2[valids]
+          Tdata = Tdata[valids, ]
+          indices = unique(sub2ind(nRow, nCol, i1, i2))
+          if(myvalue_posneg() == "upload_positives"){
+            positives = indices
+            if("EdgeWeight" %in% colnames(Tdata)){
+              weights_positive = Tdata$EdgeWeight
+            } else {
+              weights_positive =  rep(1, length(positives))
+            }
+            positives_legend = "Positives (Upload)"
+          } else {
+            negatives = indices
+            if("EdgeWeight" %in% colnames(Tdata)){
+              weights_negative = Tdata$EdgeWeight
+            } else {
+              weights_negative =  rep(1, length(negatives))
+            }
+            negatives_legend = "Negatives (Upload)"
+          }
+        }
+        
         out <- ind2sub(nRow, nCol, positives);
         d1pos = degreeRow[out$r]
         d2pos = degreeCol[out$c]
         proddegPos = sqrt(d1pos * d2pos);
+        # proddegPos = proddegPos[stratified_network_table()$EdgeCategory == "Rich Edge"]
         
         out <- ind2sub(nRow, nCol, negatives);
         d1neg = degreeRow[out$r]
         d2neg = degreeCol[out$c]
         proddegNeg = sqrt(d1neg * d2neg);
         
-        out = suppressWarnings(ks.test(proddegPos, proddegNeg))
+        # weights_positive =  rep(1, length(proddegPos))
+        # weights_positive = 1 / proddegPos^2
+        # weights_positive = weighted_network_table()$EdgeWeight
+        # weights_positive = stratified_network_table()$EdgeCategory == "Poor Edge"
+        
+        
+        # out = suppressWarnings(ks.test(proddegPos, proddegNeg))
+        out = suppressWarnings(
+          ks_test(
+            x = proddegPos, 
+            y = proddegNeg, 
+            w_x = weights_positive, 
+            w_y = weights_negative, 
+            thresh = 0
+          )
+        )
         ksstat = out$statistic
         
-        sortedProddegPos <- sort(proddegPos, decreasing = FALSE)
-        percProddegPos <- (1:length(sortedProddegPos))/length(sortedProddegPos)
+        sortOrderProddegPos <- order(proddegPos, decreasing = FALSE)
+        sortedProddegPos <- proddegPos[sortOrderProddegPos]
+        wProddegPos <- weights_positive[sortOrderProddegPos]
+        # percProddegPos <- (1:length(sortedProddegPos))/length(sortedProddegPos) 
+        percProddegPos <- cumsum(wProddegPos)/sum(wProddegPos) 
         sortedProddegPosU = unique(sortedProddegPos)
         ind = match(sortedProddegPosU, sortedProddegPos)
         percProddegPos = percProddegPos[ind]
         
-        sortedProddegNeg <- sort(proddegNeg, decreasing = FALSE)
-        percProddegNeg <- (1:length(sortedProddegNeg))/length(sortedProddegNeg)
+        sortOrderProddegNeg <- order(proddegNeg, decreasing = FALSE)
+        sortedProddegNeg <- proddegNeg[sortOrderProddegNeg]
+        wProddegNeg <- weights_negative[sortOrderProddegNeg]
+        percProddegNeg <- cumsum(wProddegNeg)/sum(wProddegNeg)
+        # sortedProddegNeg <- sort(proddegNeg, decreasing = FALSE)
+        # percProddegNeg <- (1:length(sortedProddegNeg))/length(sortedProddegNeg)
         sortedProddegNegU = unique(sortedProddegNeg)
         ind = match(sortedProddegNegU, sortedProddegNeg)
         percProddegNeg = percProddegNeg[ind]
         
         out = list(percProddegNeg = percProddegNeg, sortedProddegNegU = sortedProddegNegU, 
                    percProddegPos = percProddegPos, sortedProddegPosU = sortedProddegPosU, 
-                   ksstat = ksstat)
+                   ksstat = ksstat, 
+                   positives_legend = positives_legend, 
+                   negatives_legend = negatives_legend)
     })
     
     output$distPlot <- renderPlot({
@@ -576,7 +936,7 @@ server <- function(input, output) {
                   axis.text.x = element_text(size = 16, angle=90, hjust=1, face = "bold"),
                   legend.key.height = unit(1.25, "cm"))
        # p <- p + ggtitle("Influence on \n evaluation")
-        p <- p + labs(x = "", y = "Influence of the poor nodes")
+        p <- p + labs(x = "", y = "Influence of poor nodes")
         p
         
     })
@@ -620,8 +980,11 @@ server <- function(input, output) {
                   legend.key.height = unit(1.25, "cm")) +
             ylim(0, v) +
             scale_x_continuous(labels = scales::percent, limits = c(0, 1), breaks = c(0, 0.25, 0.50, 0.75, 1)) +
-             scale_color_identity("", guide = "legend", breaks = c(posColor, negColor), labels = c("Positives", "Negatives"))
+             scale_color_identity("", guide = "legend", breaks = c(posColor, negColor), labels = c(sp$positives_legend, sp$negatives_legend))
         p <- p + labs(x = "Cumulative distribution function (CDF)", y = "Pref. Attachment score")
+        #p <- p + labs(caption = "The dashed line indicates the median level. Positives are the known interactions (edges) in the test set and Negatives are the set of possible node pairs without a known interaction. Y-axis shows the preferential attachment score, which serves as a representative score for the node degree information.")
+        p <- p + labs(subtitle = sprintf("Separability: %.1f%%", 100*sp$ksstat))
+        p = p + theme(plot.subtitle = element_text(hjust = 0.5))
         p
     })
     
@@ -707,6 +1070,81 @@ server <- function(input, output) {
         p
         
     })
+    
+    output$downloadSampleData <- downloadHandler(
+      filename = function() {
+        paste(sampleNetworkValue(), '.csv', sep='')
+      },
+      content = function(con) {
+        message(con)
+        x <- parse_sample_data()
+        progress <- shiny::Progress$new()
+        on.exit(progress$close())
+        progress$set(message = "Preparing file for download", value = 0)
+        progress$inc(0.99, detail = sprintf("%.0f%%", 100*0.99))
+        write.csv(x$Tdata, file = con, row.names = FALSE)
+      }
+    )
+    
+    output$downloadWeights_csv <- downloadHandler(
+      filename = function() {
+        paste('edgeweights-', Sys.Date(), '.csv', sep='')
+      },
+      content = function(con) {
+        message(con)
+        x <- weighted_network_table()
+        progress <- shiny::Progress$new()
+        on.exit(progress$close())
+        progress$set(message = "Preparing file for download", value = 0)
+        progress$inc(0.99, detail = sprintf("%.0f%%", 100*0.99))
+        write.csv(x, file = con, row.names = FALSE)
+      }
+    )
+    
+    output$downloadWeightsTestOnly_csv <- downloadHandler(
+      filename = function() {
+        paste('edgeweights-testset-', Sys.Date(), '.csv', sep='')
+      },
+      content = function(con) {
+        message(con)
+        x <- weighted_network_table_testset()
+        progress <- shiny::Progress$new()
+        on.exit(progress$close())
+        progress$set(message = "Preparing file for download", value = 0)
+        progress$inc(0.99, detail = sprintf("%.0f%%", 100*0.99))
+        write.csv(x, file = con, row.names = FALSE)
+      }
+    )
+    
+    output$downloadStratified_csv <- downloadHandler(
+      filename = function() {
+        paste('stratified-', Sys.Date(), '.csv', sep='')
+      },
+      content = function(con) {
+        message(con)
+        x <- stratified_network_table()
+        progress <- shiny::Progress$new()
+        on.exit(progress$close())
+        progress$set(message = "Preparing file for download", value = 0)
+        progress$inc(0.99, detail = sprintf("%.0f%%", 100*0.99))
+        write.csv(x, file = con, row.names = FALSE)
+      }
+    )
+    
+    output$downloadStratifiedTestOnly_csv <- downloadHandler(
+      filename = function() {
+        paste('stratified-testset-', Sys.Date(), '.csv', sep='')
+      },
+      content = function(con) {
+        message(con)
+        x <- stratified_network_table_testset()
+        progress <- shiny::Progress$new()
+        on.exit(progress$close())
+        progress$set(message = "Preparing file for download", value = 0)
+        progress$inc(0.99, detail = sprintf("%.0f%%", 100*0.99))
+        write.csv(x, file = con, row.names = FALSE)
+      }
+    )
 }
 
 # Run the application 
